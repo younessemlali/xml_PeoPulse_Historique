@@ -13,7 +13,7 @@ def parse_xml_safely(content):
     except ET.ParseError:
         # If fails, try with encoding declaration
         if not content.startswith('<?xml'):
-            content = '<?xml version="1.0" encoding="UTF-8"?>\n' + content
+            content = '<?xml version="1.0" encoding="ISO-8859-1"?>\n' + content
         return ET.fromstring(content)
 
 def find_contracts(root):
@@ -31,7 +31,7 @@ def find_contracts(root):
             # We'll look for the element that contains both CONO_TXT and STATUT_SALARIE
             contract_elem = None
             
-            # Method: Go up until we find an element with STATUT_SALARIE
+            # Method: Go up until we find an element with STATUT_SALARIE as child
             temp = elem
             while temp is not None:
                 # Check if current element has STATUT_SALARIE as child
@@ -173,16 +173,7 @@ def main():
                 }
                 all_files_data.append(file_data)
             except Exception as e:
-                st.error(f"❌ Erreur lors du parsing XML de {uploaded_file.name}: {str(e)}") uploaded_file.read().decode('utf-8')
-            root = parse_xml_safely(content)
-            contracts = find_contracts(root)
-            
-            file_data = {
-                'filename': uploaded_file.name,
-                'content': content,
-                'contracts': contracts
-            }
-            all_files_data.append(file_data)
+                st.error(f"❌ Erreur lors du parsing XML de {uploaded_file.name}: {str(e)}")
         
         # Display summary
         st.subheader("📊 Résumé des fichiers chargés")
