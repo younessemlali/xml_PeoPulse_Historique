@@ -26,32 +26,46 @@ def find_contracts(root):
             contract_num = elem.text
             # Find the parent contract element
             parent = elem
-            while parent is not None:
-                parent = parent.find('..')
-                if parent is None:
-                    # Use root.iter() to find parent
-                    for potential_parent in root.iter():
-                        if elem in potential_parent:
-                            parent = potential_parent
-                            break
-                
-                # Check if this parent contains STATUT_SALARIE
-                statut = parent.find('.//STATUT_SALARIE')
-                if statut is not None:
-                    # Check if HISTORIQUE already exists
-                    historique = None
-                    for child in parent:
-                        if child.tag == 'HISTORIQUE':
-                            historique = child
-                            break
-                    
-                    contracts.append({
-                        'numero': contract_num,
-                        'element': parent,
-                        'has_historique': historique is not None,
-                        'historique_value': historique.text if historique is not None else None
-                    })
+            
+            # Navigate up the tree to find the contract container
+            # We'll look for the element that contains both CONO_TXT and STATUT_SALARIE
+            contract_elem = None
+            
+            # Method: Go up until we find an element with STATUT_SALARIE
+            temp = elem
+            while temp is not None:
+                # Check if current element has STATUT_SALARIE as child
+                statut = temp.find('.//STATUT_SALARIE')
+                if statut is not None and temp.find('.//CONO_TXT') is not None:
+                    contract_elem = temp
                     break
+                
+                # Try to go to parent - using a different approach
+                parent_elem = None
+                for potential_parent in root.iter():
+                    for child in potential_parent:
+                        if child == temp:
+                            parent_elem = potential_parent
+                            break
+                    if parent_elem:
+                        break
+                
+                temp = parent_elem
+            
+            if contract_elem is not None:
+                # Check if HISTORIQUE already exists
+                historique = None
+                for child in contract_elem:
+                    if child.tag == 'HISTORIQUE':
+                        historique = child
+                        break
+                
+                contracts.append({
+                    'numero': contract_num,
+                    'element': contract_elem,
+                    'has_historique': historique is not None,
+                    'historique_value': historique.text if historique is not None else None
+                })
     
     return contracts
 
@@ -91,9 +105,19 @@ def process_xml_content(content, selected_contracts=None):
     # Convert back to string with proper formatting
     xml_str = ET.tostring(root, encoding='unicode')
     
-    # Add proper XML declaration
-    if not xml_str.startswith('<?xml'):
-        xml_str = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
+    # Check if original content had XML declaration
+    if content.strip().startswith('<?xml'):
+        # Extract original declaration to preserve encoding
+        first_line = content.split('\n')[0]
+        if 'encoding=' in first_line:
+            # Keep original declaration
+            xml_str = first_line + '\n' + xml_str
+        else:
+            # Add declaration with ISO-8859-1
+            xml_str = '<?xml version="1.0" encoding="ISO-8859-1"?>\n' + xml_str
+    else:
+        # Add declaration with ISO-8859-1
+        xml_str = '<?xml version="1.0" encoding="ISO-8859-1"?>\n' + xml_str
     
     return xml_str, modified_contracts
 
@@ -122,7 +146,34 @@ def main():
         all_files_data = []
         
         for uploaded_file in uploaded_files:
-            content = uploaded_file.read().decode('utf-8')
+            # Try ISO-8859-1 first (as specified by user), then other encodings
+            content = None
+            encodings_to_try = ['iso-8859-1', 'latin-1', 'cp1252', 'utf-8', 'utf-16']
+            
+            for encoding in encodings_to_try:
+                try:
+                    uploaded_file.seek(0)  # Reset file pointer
+                    content = uploaded_file.read().decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if content is None:
+                st.error(f"❌ Impossible de lire le fichier {uploaded_file.name}. Encodage non reconnu.")
+                continue
+            
+            try:
+                root = parse_xml_safely(content)
+                contracts = find_contracts(root)
+                
+                file_data = {
+                    'filename': uploaded_file.name,
+                    'content': content,
+                    'contracts': contracts
+                }
+                all_files_data.append(file_data)
+            except Exception as e:
+                st.error(f"❌ Erreur lors du parsing XML de {uploaded_file.name}: {str(e)}") uploaded_file.read().decode('utf-8')
             root = parse_xml_safely(content)
             contracts = find_contracts(root)
             
@@ -255,7 +306,7 @@ def main():
                         for pf in processed_files:
                             st.download_button(
                                 label=f"📄 {pf['filename']}",
-                                data=pf['content'].encode('utf-8'),
+                                data=pf['content'].encode('iso-8859-1'),
                                 file_name=f"modified_{pf['filename']}",
                                 mime="application/xml"
                             )
@@ -271,7 +322,7 @@ def main():
                                 for pf in processed_files:
                                     zip_file.writestr(
                                         f"modified_{pf['filename']}",
-                                        pf['content'].encode('utf-8')
+                                        pf['content'].encode('iso-8859-1')
                                     )
                             
                             st.download_button(
