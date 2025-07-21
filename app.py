@@ -20,52 +20,61 @@ def find_contracts(root):
     """Find all contracts in the XML and their details"""
     contracts = []
     
-    # Find all CONO_TXT elements to identify contracts
+    # Stratégie : Pour chaque STATUT_SALARIE, trouver le CONO_TXT associé
     for elem in root.iter():
-        if elem.tag == 'CONO_TXT':
-            contract_num = elem.text
-            # Find the parent contract element
+        if elem.tag == 'STATUT_SALARIE':
+            # Trouver le parent qui contient à la fois STATUT_SALARIE et CONO_TXT
             parent = elem
-            
-            # Navigate up the tree to find the contract container
-            # We'll look for the element that contains both CONO_TXT and STATUT_SALARIE
             contract_elem = None
             
-            # Method: Go up until we find an element with STATUT_SALARIE as child
-            temp = elem
-            while temp is not None:
-                # Check if current element has STATUT_SALARIE as child
-                statut = temp.find('.//STATUT_SALARIE')
-                if statut is not None and temp.find('.//CONO_TXT') is not None:
-                    contract_elem = temp
+            # Remonter dans l'arbre pour trouver le conteneur du contrat
+            levels_up = 0
+            while levels_up < 10:  # Limite de sécurité
+                # Chercher le parent
+                potential_parent = None
+                for p in root.iter():
+                    if parent in list(p):
+                        potential_parent = p
+                        break
+                
+                if potential_parent is None:
+                    break
+                    
+                # Vérifier si ce parent contient CONO_TXT
+                cono_txt = potential_parent.find('.//CONO_TXT')
+                if cono_txt is not None:
+                    contract_elem = potential_parent
                     break
                 
-                # Try to go to parent - using a different approach
-                parent_elem = None
-                for potential_parent in root.iter():
-                    for child in potential_parent:
-                        if child == temp:
-                            parent_elem = potential_parent
-                            break
-                    if parent_elem:
-                        break
-                
-                temp = parent_elem
+                parent = potential_parent
+                levels_up += 1
             
             if contract_elem is not None:
-                # Check if HISTORIQUE already exists
-                historique = None
-                for child in contract_elem:
-                    if child.tag == 'HISTORIQUE':
-                        historique = child
-                        break
-                
-                contracts.append({
-                    'numero': contract_num,
-                    'element': contract_elem,
-                    'has_historique': historique is not None,
-                    'historique_value': historique.text if historique is not None else None
-                })
+                # Récupérer le numéro de contrat
+                cono_elem = contract_elem.find('.//CONO_TXT')
+                if cono_elem is not None and cono_elem.text:
+                    contract_num = cono_elem.text.strip()
+                    
+                    # Vérifier si HISTORIQUE existe déjà
+                    historique = None
+                    # Chercher HISTORIQUE juste après STATUT_SALARIE
+                    children_list = list(contract_elem)
+                    for i, child in enumerate(children_list):
+                        if child.tag == 'STATUT_SALARIE':
+                            # Regarder l'élément suivant
+                            if i + 1 < len(children_list) and children_list[i + 1].tag == 'HISTORIQUE':
+                                historique = children_list[i + 1]
+                            break
+                    
+                    # Éviter les doublons
+                    already_added = any(c['numero'] == contract_num for c in contracts)
+                    if not already_added:
+                        contracts.append({
+                            'numero': contract_num,
+                            'element': contract_elem,
+                            'has_historique': historique is not None,
+                            'historique_value': historique.text if historique is not None else None
+                        })
     
     return contracts
 
@@ -183,11 +192,14 @@ def main():
                 contracts = file_data['contracts']
                 
                 if contracts:
+                    # Debug : afficher le nombre de contrats trouvés
+                    st.write(f"**Nombre de contrats trouvés:** {len(contracts)}")
+                    
                     # Create dataframe for display
                     df_data = []
                     for contract in contracts:
                         df_data.append({
-                            'Numéro de contrat': contract['numero'],
+                            'Numéro de contrat': contract['numero'] if contract['numero'] else 'Non trouvé',
                             'Balise HISTORIQUE présente': '✅ Oui' if contract['has_historique'] else '❌ Non',
                             'Valeur actuelle': contract['historique_value'] if contract['has_historique'] else '-',
                             'Action requise': '✅ Aucune' if contract['has_historique'] else '⚠️ Ajout nécessaire'
@@ -229,23 +241,27 @@ def main():
             st.subheader("📋 Sélection des contrats")
             
             all_contracts_to_modify = []
+            contract_mapping = {}  # Pour garder la correspondance fichier-contrat
+            
             for file_data in all_files_data:
-                contracts_needing_modification = [
-                    f"{file_data['filename']} - {c['numero']}" 
-                    for c in file_data['contracts'] 
-                    if not c['has_historique']
-                ]
-                all_contracts_to_modify.extend(contracts_needing_modification)
+                for c in file_data['contracts']:
+                    if not c['has_historique']:
+                        # Afficher le numéro de contrat et le fichier source
+                        display_name = f"Contrat: {c['numero']} (Fichier: {file_data['filename']})"
+                        all_contracts_to_modify.append(display_name)
+                        # Stocker la correspondance
+                        contract_mapping[display_name] = c['numero']
             
             if all_contracts_to_modify:
                 selected = st.multiselect(
                     "Sélectionnez les contrats à modifier",
                     all_contracts_to_modify,
-                    default=all_contracts_to_modify
+                    default=all_contracts_to_modify,
+                    help="Les numéros affichés correspondent aux valeurs dans la balise <CONO_TXT>"
                 )
                 
                 # Extract contract numbers from selection
-                selected_contracts = [s.split(' - ')[1] for s in selected]
+                selected_contracts = [contract_mapping[s] for s in selected]
             else:
                 st.info("ℹ️ Aucun contrat ne nécessite de modification")
         
