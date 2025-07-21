@@ -23,73 +23,86 @@ def find_contracts_simple(content):
     # Utiliser regex pour trouver les patterns
     lines = content.split('\n')
     
+    # D'abord, trouver tous les CONO_TXT
+    cono_positions = []
     for i, line in enumerate(lines):
         if '<CONO_TXT>' in line and '</CONO_TXT>' in line:
-            # Extraire le numéro de contrat
             match = re.search(r'<CONO_TXT>(.*?)</CONO_TXT>', line)
             if match:
-                contract_num = match.group(1).strip()
-                
-                # Chercher si HISTORIQUE existe après STATUT_SALARIE pour ce contrat
-                has_historique = False
-                
-                # Chercher en arrière pour trouver le début du contrat
-                # puis chercher STATUT_SALARIE et HISTORIQUE
-                for j in range(i, min(i + 50, len(lines))):  # Regarder les 50 lignes suivantes
-                    if '<STATUT_SALARIE>' in lines[j]:
-                        # Vérifier si la ligne suivante contient HISTORIQUE
-                        if j + 1 < len(lines) and '<HISTORIQUE>' in lines[j + 1]:
-                            has_historique = True
-                        break
-                
-                contracts.append({
-                    'numero': contract_num,
-                    'line_index': i,
-                    'has_historique': has_historique
+                cono_positions.append({
+                    'numero': match.group(1).strip(),
+                    'line': i
                 })
+    
+    # Pour chaque CONO_TXT trouvé, vérifier s'il y a HISTORIQUE après STATUT_SALARIE
+    for cono in cono_positions:
+        has_historique = False
+        statut_line = None
+        
+        # Chercher STATUT_SALARIE après CONO_TXT
+        for j in range(cono['line'], min(cono['line'] + 100, len(lines))):
+            if '<STATUT_SALARIE>' in lines[j] and '</STATUT_SALARIE>' in lines[j]:
+                statut_line = j
+                # Vérifier si la ligne suivante contient HISTORIQUE
+                if j + 1 < len(lines) and '<HISTORIQUE>' in lines[j + 1] and '</HISTORIQUE>' in lines[j + 1]:
+                    has_historique = True
+                break
+        
+        contracts.append({
+            'numero': cono['numero'],
+            'line_index': cono['line'],
+            'statut_line': statut_line,
+            'has_historique': has_historique
+        })
     
     return contracts
 
 def add_historique_to_content(content, contracts_to_modify):
     """Add HISTORIQUE tag after STATUT_SALARIE for selected contracts"""
     if not contracts_to_modify:
-        return content
+        return content, []
     
     lines = content.split('\n')
     new_lines = []
     modified_contracts = []
+    current_contract = None
+    
+    # D'abord, créer un mapping des positions des contrats
+    contract_positions = {}
+    for i, line in enumerate(lines):
+        if '<CONO_TXT>' in line and '</CONO_TXT>' in line:
+            match = re.search(r'<CONO_TXT>(.*?)</CONO_TXT>', line)
+            if match:
+                contract_num = match.group(1).strip()
+                contract_positions[i] = contract_num
     
     i = 0
     while i < len(lines):
-        new_lines.append(lines[i])
+        line = lines[i]
+        new_lines.append(line)
         
-        # Si on trouve STATUT_SALARIE
-        if '<STATUT_SALARIE>' in lines[i] and '</STATUT_SALARIE>' in lines[i]:
-            # Vérifier si on est dans un contrat à modifier
-            # Chercher le CONO_TXT précédent pour identifier le contrat
-            contract_num = None
-            for j in range(max(0, i-50), i):  # Regarder jusqu'à 50 lignes avant
-                if '<CONO_TXT>' in lines[j]:
-                    match = re.search(r'<CONO_TXT>(.*?)</CONO_TXT>', lines[j])
-                    if match:
-                        contract_num = match.group(1).strip()
-                        break
-            
-            # Si c'est un contrat à modifier et qu'il n'y a pas déjà HISTORIQUE
-            if contract_num and contract_num in contracts_to_modify:
-                next_line_has_historique = False
+        # Mettre à jour le contrat courant si on trouve un CONO_TXT
+        if i in contract_positions:
+            current_contract = contract_positions[i]
+        
+        # Si on trouve STATUT_SALARIE et qu'on est dans un contrat à modifier
+        if '<STATUT_SALARIE>' in line and '</STATUT_SALARIE>' in line:
+            if current_contract and current_contract in contracts_to_modify:
+                # Vérifier que la ligne suivante n'est pas déjà HISTORIQUE
+                next_has_historique = False
                 if i + 1 < len(lines):
-                    next_line_has_historique = '<HISTORIQUE>' in lines[i + 1]
+                    next_has_historique = '<HISTORIQUE>' in lines[i + 1] and '</HISTORIQUE>' in lines[i + 1]
                 
-                if not next_line_has_historique:
-                    # Ajouter HISTORIQUE avec la même indentation
-                    indent = len(lines[i]) - len(lines[i].lstrip())
-                    new_lines.append(' ' * indent + '<HISTORIQUE>1</HISTORIQUE>')
-                    modified_contracts.append(contract_num)
+                if not next_has_historique:
+                    # Ajouter HISTORIQUE avec la même indentation que STATUT_SALARIE
+                    indent = len(line) - len(line.lstrip())
+                    historique_line = ' ' * indent + '<HISTORIQUE>1</HISTORIQUE>'
+                    new_lines.append(historique_line)
+                    modified_contracts.append(current_contract)
         
         i += 1
     
-    return '\n'.join(new_lines), modified_contracts
+    return '\n'.join(new_lines), list(set(modified_contracts))  # Enlever les doublons
 
 def main():
     st.set_page_config(
