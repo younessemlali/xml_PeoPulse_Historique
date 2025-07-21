@@ -16,119 +16,80 @@ def parse_xml_safely(content):
             content = '<?xml version="1.0" encoding="ISO-8859-1"?>\n' + content
         return ET.fromstring(content)
 
-def find_contracts(root):
-    """Find all contracts in the XML and their details"""
+def find_contracts_simple(content):
+    """Find all contracts by looking for CONO_TXT values and checking if HISTORIQUE exists"""
     contracts = []
     
-    # Stratégie : Pour chaque STATUT_SALARIE, trouver le CONO_TXT associé
-    for elem in root.iter():
-        if elem.tag == 'STATUT_SALARIE':
-            # Trouver le parent qui contient à la fois STATUT_SALARIE et CONO_TXT
-            parent = elem
-            contract_elem = None
-            
-            # Remonter dans l'arbre pour trouver le conteneur du contrat
-            levels_up = 0
-            while levels_up < 10:  # Limite de sécurité
-                # Chercher le parent
-                potential_parent = None
-                for p in root.iter():
-                    if parent in list(p):
-                        potential_parent = p
+    # Utiliser regex pour trouver les patterns
+    lines = content.split('\n')
+    
+    for i, line in enumerate(lines):
+        if '<CONO_TXT>' in line and '</CONO_TXT>' in line:
+            # Extraire le numéro de contrat
+            match = re.search(r'<CONO_TXT>(.*?)</CONO_TXT>', line)
+            if match:
+                contract_num = match.group(1).strip()
+                
+                # Chercher si HISTORIQUE existe après STATUT_SALARIE pour ce contrat
+                has_historique = False
+                
+                # Chercher en arrière pour trouver le début du contrat
+                # puis chercher STATUT_SALARIE et HISTORIQUE
+                for j in range(i, min(i + 50, len(lines))):  # Regarder les 50 lignes suivantes
+                    if '<STATUT_SALARIE>' in lines[j]:
+                        # Vérifier si la ligne suivante contient HISTORIQUE
+                        if j + 1 < len(lines) and '<HISTORIQUE>' in lines[j + 1]:
+                            has_historique = True
                         break
                 
-                if potential_parent is None:
-                    break
-                    
-                # Vérifier si ce parent contient CONO_TXT
-                cono_txt = potential_parent.find('.//CONO_TXT')
-                if cono_txt is not None:
-                    contract_elem = potential_parent
-                    break
-                
-                parent = potential_parent
-                levels_up += 1
-            
-            if contract_elem is not None:
-                # Récupérer le numéro de contrat
-                cono_elem = contract_elem.find('.//CONO_TXT')
-                if cono_elem is not None and cono_elem.text:
-                    contract_num = cono_elem.text.strip()
-                    
-                    # Vérifier si HISTORIQUE existe déjà
-                    historique = None
-                    # Chercher HISTORIQUE juste après STATUT_SALARIE
-                    children_list = list(contract_elem)
-                    for i, child in enumerate(children_list):
-                        if child.tag == 'STATUT_SALARIE':
-                            # Regarder l'élément suivant
-                            if i + 1 < len(children_list) and children_list[i + 1].tag == 'HISTORIQUE':
-                                historique = children_list[i + 1]
-                            break
-                    
-                    # Éviter les doublons
-                    already_added = any(c['numero'] == contract_num for c in contracts)
-                    if not already_added:
-                        contracts.append({
-                            'numero': contract_num,
-                            'element': contract_elem,
-                            'has_historique': historique is not None,
-                            'historique_value': historique.text if historique is not None else None
-                        })
+                contracts.append({
+                    'numero': contract_num,
+                    'line_index': i,
+                    'has_historique': has_historique
+                })
     
     return contracts
 
-def add_historique_to_contract(contract_elem):
-    """Add HISTORIQUE tag after STATUT_SALARIE and before CONTDET_1"""
-    # Find STATUT_SALARIE position
-    statut_index = None
-    for i, child in enumerate(contract_elem):
-        if child.tag == 'STATUT_SALARIE':
-            statut_index = i
-            break
+def add_historique_to_content(content, contracts_to_modify):
+    """Add HISTORIQUE tag after STATUT_SALARIE for selected contracts"""
+    if not contracts_to_modify:
+        return content
     
-    if statut_index is not None:
-        # Create HISTORIQUE element
-        historique = ET.Element('HISTORIQUE')
-        historique.text = '1'
-        
-        # Insert after STATUT_SALARIE
-        contract_elem.insert(statut_index + 1, historique)
-        return True
-    
-    return False
-
-def process_xml_content(content, selected_contracts=None):
-    """Process XML content and add HISTORIQUE tags"""
-    root = parse_xml_safely(content)
-    contracts = find_contracts(root)
-    
+    lines = content.split('\n')
+    new_lines = []
     modified_contracts = []
     
-    for contract in contracts:
-        if not contract['has_historique']:
-            if selected_contracts is None or contract['numero'] in selected_contracts:
-                if add_historique_to_contract(contract['element']):
-                    modified_contracts.append(contract['numero'])
+    i = 0
+    while i < len(lines):
+        new_lines.append(lines[i])
+        
+        # Si on trouve STATUT_SALARIE
+        if '<STATUT_SALARIE>' in lines[i] and '</STATUT_SALARIE>' in lines[i]:
+            # Vérifier si on est dans un contrat à modifier
+            # Chercher le CONO_TXT précédent pour identifier le contrat
+            contract_num = None
+            for j in range(max(0, i-50), i):  # Regarder jusqu'à 50 lignes avant
+                if '<CONO_TXT>' in lines[j]:
+                    match = re.search(r'<CONO_TXT>(.*?)</CONO_TXT>', lines[j])
+                    if match:
+                        contract_num = match.group(1).strip()
+                        break
+            
+            # Si c'est un contrat à modifier et qu'il n'y a pas déjà HISTORIQUE
+            if contract_num and contract_num in contracts_to_modify:
+                next_line_has_historique = False
+                if i + 1 < len(lines):
+                    next_line_has_historique = '<HISTORIQUE>' in lines[i + 1]
+                
+                if not next_line_has_historique:
+                    # Ajouter HISTORIQUE avec la même indentation
+                    indent = len(lines[i]) - len(lines[i].lstrip())
+                    new_lines.append(' ' * indent + '<HISTORIQUE>1</HISTORIQUE>')
+                    modified_contracts.append(contract_num)
+        
+        i += 1
     
-    # Convert back to string with proper formatting
-    xml_str = ET.tostring(root, encoding='unicode')
-    
-    # Check if original content had XML declaration
-    if content.strip().startswith('<?xml'):
-        # Extract original declaration to preserve encoding
-        first_line = content.split('\n')[0]
-        if 'encoding=' in first_line:
-            # Keep original declaration
-            xml_str = first_line + '\n' + xml_str
-        else:
-            # Add declaration with ISO-8859-1
-            xml_str = '<?xml version="1.0" encoding="ISO-8859-1"?>\n' + xml_str
-    else:
-        # Add declaration with ISO-8859-1
-        xml_str = '<?xml version="1.0" encoding="ISO-8859-1"?>\n' + xml_str
-    
-    return xml_str, modified_contracts
+    return '\n'.join(new_lines), modified_contracts
 
 def main():
     st.set_page_config(
@@ -172,8 +133,8 @@ def main():
                 continue
             
             try:
-                root = parse_xml_safely(content)
-                contracts = find_contracts(root)
+                # Trouver les contrats
+                contracts = find_contracts_simple(content)
                 
                 file_data = {
                     'filename': uploaded_file.name,
@@ -182,48 +143,56 @@ def main():
                 }
                 all_files_data.append(file_data)
             except Exception as e:
-                st.error(f"❌ Erreur lors du parsing XML de {uploaded_file.name}: {str(e)}")
+                st.error(f"❌ Erreur lors du parsing de {uploaded_file.name}: {str(e)}")
         
+        if not all_files_data:
+            return
+            
         # Display summary
         st.subheader("📊 Résumé des fichiers chargés")
         
+        total_contracts = 0
+        total_needing_historique = 0
+        
         for file_data in all_files_data:
-            with st.expander(f"📄 {file_data['filename']}"):
+            with st.expander(f"📄 {file_data['filename']}", expanded=True):
                 contracts = file_data['contracts']
                 
                 if contracts:
-                    # Debug : afficher le nombre de contrats trouvés
-                    st.write(f"**Nombre de contrats trouvés:** {len(contracts)}")
-                    
                     # Create dataframe for display
                     df_data = []
                     for contract in contracts:
                         df_data.append({
-                            'Numéro de contrat': contract['numero'] if contract['numero'] else 'Non trouvé',
-                            'Balise HISTORIQUE présente': '✅ Oui' if contract['has_historique'] else '❌ Non',
-                            'Valeur actuelle': contract['historique_value'] if contract['has_historique'] else '-',
-                            'Action requise': '✅ Aucune' if contract['has_historique'] else '⚠️ Ajout nécessaire'
+                            'Numéro de contrat': contract['numero'],
+                            'Balise HISTORIQUE': '✅ Présente' if contract['has_historique'] else '❌ Absente',
+                            'Action': '✅ Aucune' if contract['has_historique'] else '⚠️ Ajout nécessaire'
                         })
                     
                     df = pd.DataFrame(df_data)
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
                     
-                    # Count contracts needing modification
+                    # Count contracts
                     needs_modification = [c for c in contracts if not c['has_historique']]
+                    total_contracts += len(contracts)
+                    total_needing_historique += len(needs_modification)
                     
                     if needs_modification:
-                        st.info(f"📝 {len(needs_modification)} contrat(s) nécessitent l'ajout de la balise HISTORIQUE")
+                        st.info(f"📝 {len(needs_modification)} contrat(s) sur {len(contracts)} nécessitent l'ajout de la balise HISTORIQUE")
                     else:
                         st.success("✅ Tous les contrats ont déjà la balise HISTORIQUE")
                 else:
                     st.warning("⚠️ Aucun contrat trouvé dans ce fichier")
         
+        if total_needing_historique == 0:
+            st.success("✅ Tous les contrats ont déjà la balise HISTORIQUE !")
+            return
+            
         st.markdown("---")
         
         # Processing options
         st.subheader("🛠️ Options de traitement")
         
-        col1, col2 = st.columns(2)
+        col1, col2 = st.columns([2, 1])
         
         with col1:
             process_mode = st.radio(
@@ -233,47 +202,58 @@ def main():
             )
         
         with col2:
-            st.info("💡 La balise HISTORIQUE sera ajoutée avec la valeur '1' après STATUT_SALARIE")
+            st.info("💡 La balise HISTORIQUE sera ajoutée entre STATUT_SALARIE et CONTDET_1")
         
         # Contract selection if needed
-        selected_contracts = None
+        selected_contracts = []
+        
         if process_mode == "Sélectionner les contrats à traiter":
             st.subheader("📋 Sélection des contrats")
+            st.markdown("Cochez les contrats que vous souhaitez modifier :")
             
-            all_contracts_to_modify = []
-            contract_mapping = {}  # Pour garder la correspondance fichier-contrat
+            # Créer des colonnes pour un meilleur affichage
+            cols = st.columns(3)
+            col_index = 0
             
             for file_data in all_files_data:
-                for c in file_data['contracts']:
-                    if not c['has_historique']:
-                        # Afficher le numéro de contrat et le fichier source
-                        display_name = f"Contrat: {c['numero']} (Fichier: {file_data['filename']})"
-                        all_contracts_to_modify.append(display_name)
-                        # Stocker la correspondance
-                        contract_mapping[display_name] = c['numero']
-            
-            if all_contracts_to_modify:
-                selected = st.multiselect(
-                    "Sélectionnez les contrats à modifier",
-                    all_contracts_to_modify,
-                    default=all_contracts_to_modify,
-                    help="Les numéros affichés correspondent aux valeurs dans la balise <CONO_TXT>"
-                )
+                contracts_to_modify = [c for c in file_data['contracts'] if not c['has_historique']]
                 
-                # Extract contract numbers from selection
-                selected_contracts = [contract_mapping[s] for s in selected]
-            else:
-                st.info("ℹ️ Aucun contrat ne nécessite de modification")
+                if contracts_to_modify:
+                    with cols[col_index % 3]:
+                        st.markdown(f"**{file_data['filename']}**")
+                        for contract in contracts_to_modify:
+                            if st.checkbox(
+                                f"{contract['numero']}", 
+                                key=f"{file_data['filename']}_{contract['numero']}",
+                                value=True  # Coché par défaut
+                            ):
+                                selected_contracts.append(contract['numero'])
+                    col_index += 1
+            
+            if not selected_contracts:
+                st.warning("⚠️ Veuillez sélectionner au moins un contrat à modifier")
+        else:
+            # Mode "tous les contrats" - sélectionner automatiquement tous les contrats sans HISTORIQUE
+            for file_data in all_files_data:
+                for contract in file_data['contracts']:
+                    if not contract['has_historique']:
+                        selected_contracts.append(contract['numero'])
         
         # Process button
-        if st.button("🚀 Traiter les fichiers", type="primary"):
+        if st.button("🚀 Traiter les fichiers", type="primary", disabled=len(selected_contracts) == 0):
             with st.spinner("Traitement en cours..."):
                 processed_files = []
                 total_modified = 0
                 
-                for file_data in all_files_data:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for idx, file_data in enumerate(all_files_data):
+                    status_text.text(f"Traitement de {file_data['filename']}...")
+                    
                     try:
-                        processed_content, modified_contracts = process_xml_content(
+                        # Modifier le contenu
+                        processed_content, modified_contracts = add_historique_to_content(
                             file_data['content'],
                             selected_contracts
                         )
@@ -289,18 +269,24 @@ def main():
                         
                     except Exception as e:
                         st.error(f"❌ Erreur lors du traitement de {file_data['filename']}: {str(e)}")
+                    
+                    progress_bar.progress((idx + 1) / len(all_files_data))
+                
+                progress_bar.empty()
+                status_text.empty()
                 
                 if processed_files:
                     st.success(f"✅ Traitement terminé ! {total_modified} contrat(s) modifié(s)")
                     
                     # Results summary
-                    st.subheader("📊 Résumé des modifications")
-                    for pf in processed_files:
-                        if pf['modified_count'] > 0:
-                            with st.expander(f"✅ {pf['filename']} - {pf['modified_count']} modification(s)"):
-                                st.write("Contrats modifiés:")
-                                for contract in pf['modified_contracts']:
-                                    st.write(f"• {contract}")
+                    if total_modified > 0:
+                        st.subheader("📊 Résumé des modifications")
+                        for pf in processed_files:
+                            if pf['modified_count'] > 0:
+                                with st.expander(f"✅ {pf['filename']} - {pf['modified_count']} modification(s)"):
+                                    st.write("**Contrats modifiés :**")
+                                    for i, contract in enumerate(pf['modified_contracts'], 1):
+                                        st.write(f"{i}. {contract}")
                     
                     # Download options
                     st.subheader("💾 Téléchargement des fichiers traités")
@@ -309,10 +295,10 @@ def main():
                     
                     with col1:
                         # Individual file downloads
-                        st.write("**Télécharger individuellement:**")
+                        st.write("**📄 Télécharger individuellement :**")
                         for pf in processed_files:
                             st.download_button(
-                                label=f"📄 {pf['filename']}",
+                                label=f"💾 {pf['filename']}",
                                 data=pf['content'].encode('iso-8859-1'),
                                 file_name=f"modified_{pf['filename']}",
                                 mime="application/xml"
@@ -321,7 +307,7 @@ def main():
                     with col2:
                         # ZIP download for all files
                         if len(processed_files) > 1:
-                            st.write("**Télécharger tous les fichiers:**")
+                            st.write("**📦 Télécharger en groupe :**")
                             
                             # Create ZIP file
                             zip_buffer = BytesIO()
@@ -342,23 +328,25 @@ def main():
     else:
         # Instructions
         st.info("""
-        📌 **Instructions d'utilisation:**
+        📌 **Instructions d'utilisation :**
         
-        1. Chargez un ou plusieurs fichiers XML contenant vos contrats de travail
-        2. L'application analysera automatiquement les contrats
-        3. Choisissez de traiter tous les contrats ou sélectionnez ceux à modifier
-        4. Téléchargez les fichiers corrigés avec la balise HISTORIQUE ajoutée
+        1. **Chargez** un ou plusieurs fichiers XML contenant vos contrats de travail
+        2. L'application **analysera** automatiquement les contrats via la balise `<CONO_TXT>`
+        3. **Choisissez** de traiter tous les contrats ou sélectionnez ceux à modifier
+        4. **Téléchargez** les fichiers corrigés avec la balise HISTORIQUE ajoutée
         
-        La balise `<HISTORIQUE>1</HISTORIQUE>` sera ajoutée automatiquement entre 
-        `<STATUT_SALARIE>` et `<CONTDET_1>` pour chaque contrat qui n'en possède pas.
+        La balise `<HISTORIQUE>1</HISTORIQUE>` sera ajoutée automatiquement après 
+        `<STATUT_SALARIE>` et avant `<CONTDET_1>` pour chaque contrat sélectionné.
         """)
         
         # Example
-        with st.expander("📋 Voir un exemple"):
+        with st.expander("📋 Voir un exemple de structure"):
             st.code("""
 <STATUT_SALARIE>0</STATUT_SALARIE>
-<HISTORIQUE>1</HISTORIQUE>  <!-- Balise ajoutée automatiquement -->
+<HISTORIQUE>1</HISTORIQUE>
 <CONTDET_1>
+    <DATE>20140505</DATE>
+    <RUCODE>1100</RUCODE>
     ...
 </CONTDET_1>
             """, language="xml")
